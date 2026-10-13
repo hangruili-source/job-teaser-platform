@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: daylight-demo
+    runtime: node
+    plan: free
+    branch: daylight-demo
+    autoDeploy: false
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: "24"
+      - key: NODE_ENV
+        value: production
+      - key: HOST
+        value: 0.0.0.0
+      - key: APP_PASSWORD
+        generateValue: true
