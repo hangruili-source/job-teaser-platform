@@ -5,10 +5,14 @@ services:
     plan: free
     branch: daylight-demo
     autoDeploy: false
-    buildCommand: npm ci --include=dev && npm run build
+    buildCommand: npm ci --include=dev && npx playwright install chromium && npm run build
     startCommand: npm start
     healthCheckPath: /health
     envVars:
+      - key: PLAYWRIGHT_BROWSERS_PATH
+        value: /opt/render/project/src/.playwright
+      - key: APPLICATIONS_ENABLED
+        value: "false"
       - key: NODE_VERSION
         value: "24"
       - key: NODE_ENV

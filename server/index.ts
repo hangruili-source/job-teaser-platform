@@ -8,7 +8,7 @@ import { all, currentResume, events, get, log, newId, put, saveSettings, setting
 import { browserAvailable, isPortalUrl, sessionFile, storageSchema, verifyConnection } from './connector.js';
 import { seedDemo } from './demo.js';
 import { dayInTimezone } from './matching.js';
-import { dispatch, isRunning, startRun, startScheduler } from './workflow.js';
+import { applicationsEnabled, dispatch, isRunning, startRun, startScheduler } from './workflow.js';
 import { extractResume, renderResume, resumePath, saveOriginal } from './resumes.js';
 import { exportWorkbook } from './export.js';
 import type { Job, Mode, Resume, Run } from '../shared/types.js';
@@ -31,11 +31,20 @@ seedDemo(settings().timezone);
 app.get('/api/state',(req,res)=>{
  const mode=modeOf(req.query.mode);const day=dayOf(req.query.day);if(mode==='demo')seedDemo(settings().timezone);
  const runs=all<Run>('run',mode).sort((a,b)=>b.startedAt.localeCompare(a.startedAt));const ids=new Set(runs.filter(r=>r.day===day).map(r=>r.id));
- res.json({mode,day,jobs:all<Job>('job',mode).filter(j=>(dayInTimezone(new Date(j.publishedAt),settings().timezone)===day||j.processingDay===day)).sort((a,b)=>b.publishedAt.localeCompare(a.publishedAt)),resumes:all<Resume>('resume',mode).sort((a,b)=>b.createdAt.localeCompare(a.createdAt)),events:events(mode).filter(e=>e.runId?ids.has(e.runId):dayInTimezone(new Date(e.at),settings().timezone)===day),runs:runs.filter(r=>r.day===day),settings:settings(),connection:{session:existsSync(sessionFile),apiKey:!!(process.env.DAYLIGHT_OPENAI_KEY || process.env.OPENAI_API_KEY),browser:browserAvailable(),portal,portalMessage},running:isRunning()});
+ res.json({mode,day,jobs:all<Job>('job',mode).filter(j=>(dayInTimezone(new Date(j.publishedAt),settings().timezone)===day||j.processingDay===day)).sort((a,b)=>b.publishedAt.localeCompare(a.publishedAt)),resumes:all<Resume>('resume',mode).sort((a,b)=>b.createdAt.localeCompare(a.createdAt)),events:events(mode).filter(e=>e.runId?ids.has(e.runId):dayInTimezone(new Date(e.at),settings().timezone)===day),runs:runs.filter(r=>r.day===day),settings:settings(),connection:{applicationsEnabled:applicationsEnabled(),session:existsSync(sessionFile),apiKey:!!(process.env.DAYLIGHT_OPENAI_KEY || process.env.OPENAI_API_KEY),browser:browserAvailable(),portal,portalMessage},running:isRunning()});
 });
 app.post('/api/runs',(req,res)=>{res.status(202).json(startRun(modeOf(req.body.mode),dayOf(req.body.day),z.enum(['portal','saved']).parse(req.body.source||'portal')));});
 const settingsSchema=z.object({portalUrl:z.string().refine(isPortalUrl),roles:z.string().max(500),locations:z.string().max(500),contract:z.string().max(200),timezone:z.string().refine(s=>{try{new Intl.DateTimeFormat('en',{timeZone:s});return true;}catch{return false;}}),dailyTime:z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/),scheduleEnabled:z.boolean(),autoApply:z.boolean(),model:z.string().min(1).max(100)});
-app.put('/api/settings',(req,res)=>{const s=settingsSchema.parse(req.body);if(s.portalUrl!==settings().portalUrl){portal='unverified';portalMessage='网址已改变，请验证连接。';}saveSettings(s);log('live','settings','已更新求职偏好、连接或任务设置。');res.json({ok:true});});
+app.put('/api/settings',(req,res)=>{const s=settingsSchema.parse(req.body);if(s.autoApply&&!applicationsEnabled())throw new Error('当前为仅分析模式，不能开启真实投递。');if(s.portalUrl!==settings().portalUrl){portal='unverified';portalMessage='网址已改变，请验证连接。';}saveSettings(s);log('live','settings','已更新求职偏好、连接或任务设置。');res.json({ok:true});});
+app.post('/api/model/verify',async(_req,res)=>{
+ const key=process.env.DAYLIGHT_OPENAI_KEY||process.env.OPENAI_API_KEY;
+ if(!key)throw new Error('请在 Render 的 Environment 中设置 DAYLIGHT_OPENAI_KEY。');
+ const response=await fetch('https://api.openai.com/v1/responses',{method:'POST',headers:{Authorization:`Bearer ${key}`,'Content-Type':'application/json'},signal:AbortSignal.timeout(60000),body:JSON.stringify({model:settings().model,store:false,input:'Reply with OK.',max_output_tokens:32})});
+ if(!response.ok)throw new Error(`模型验证失败（HTTP ${response.status}）。401 请检查密钥；429 请检查 API 额度或速率限制；403/404 请检查模型访问权限。`);
+ const result=await response.json() as any;
+ if(!(result.output??[]).some((o:any)=>(o.content??[]).some((c:any)=>c.type==='output_text'&&c.text)))throw new Error('模型未返回可用文本，请检查模型配置。');
+ log('live','model_verified',`模型 ${settings().model} 连接验证成功；未发送简历。`,'success');res.json({ok:true});
+});
 app.post('/api/connection',upload.single('file'),(req,res)=>{if(!req.file)throw new Error('请选择登录连接文件。');if(isRunning())throw new Error('请等待任务结束后更新连接。');const state=storageSchema.parse(JSON.parse(req.file.buffer.toString('utf8')));if(!state.cookies.length)throw new Error('连接文件没有 JobTeaser 登录信息。');writeFileSync(sessionFile,JSON.stringify(state),{mode:0o600});portal='unverified';portalMessage='文件已保存，请验证连接。';res.json({ok:true});});
 app.delete('/api/connection',(_req,res)=>{if(isRunning())throw new Error('请等待任务结束后断开连接。');if(existsSync(sessionFile))unlinkSync(sessionFile);portal='unverified';portalMessage='已断开连接';const c=settings();saveSettings({...c,scheduleEnabled:false,autoApply:false});res.json({ok:true});});
 app.post('/api/connection/verify',async(_req,res)=>{try{portalMessage=await verifyConnection(settings().portalUrl);portal='verified';res.json({ok:true,message:portalMessage});}catch(e){portal='failed';portalMessage=e instanceof Error?e.message:'连接失败';throw e;}});

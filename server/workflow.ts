@@ -10,6 +10,7 @@ import { detectLanguage } from './languages.js';
 import type { Job, Mode, Resume, Run } from '../shared/types.js';
 let running=false;
 export const isRunning=()=>running;
+export const applicationsEnabled=()=>process.env.APPLICATIONS_ENABLED==='true';
 const regions:Record<string,string[]>={
  france:['france','fr','法国','paris','lyon','marseille','toulouse','bordeaux','lille'],
  germany:['germany','de','deutschland','allemagne','德国','berlin','munich','münchen','frankfurt','hamburg','düsseldorf'],
@@ -37,6 +38,7 @@ export function selectResume(job:Job,resumes:Resume[]) {
 }
 export async function dispatch(job:Job,runId:string|null=null) {
  if(job.mode==='demo')return updateJob(job,{status:'ready',reason:'演示已完成：模拟达到提交条件，未发送任何真实申请。'});
+ if(!applicationsEnabled())throw new Error('当前为仅分析模式，真实投递已在服务器端关闭。');
  if(!job.easyApply)return updateJob(job,{status:'needs_manual',reason:'站外或无法确认的申请方式，请打开官网处理后更新状态。'});
  if(!job.resumeId)throw new Error('没有可投递的简历版本。');
  if(db.prepare('SELECT jobId FROM dispatches WHERE jobId=?').get(job.id))return updateJob(job,{status:'needs_manual',reason:'此岗位已有提交尝试，请先核实网站中的记录，系统不会重复提交。'});
@@ -79,7 +81,7 @@ export async function processJob(input:Job,runId:string) {
  } else job=updateJob(job,{resumeId:original.id});
  if(!job.easyApply){updateJob(job,{status:'needs_manual',reason:'需要跳转官网或人工确认申请方式。请打开岗位链接，使用对应简历投递。'});log(job.mode,'manual','已列入人工申请清单。','warning',runId,job.id);return;}
  job=updateJob(job,{status:'ready',reason:job.mode==='demo'?'演示流程已完成，没有发送真实申请。':'简历已准备好，可单独投递或在设置中启用自动投递。'});
- if(config.autoApply&&job.mode==='live')await dispatch(job,runId);
+ if(applicationsEnabled()&&config.autoApply&&job.mode==='live')await dispatch(job,runId);
  else log(job.mode,'ready',job.reason,'success',runId,job.id);
 }
 export function startRun(mode:Mode,day:string,source:'portal'|'saved'|'scheduled'='portal') {
